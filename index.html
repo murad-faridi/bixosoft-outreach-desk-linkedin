@@ -73,6 +73,10 @@ h1{font-size:clamp(26px,4.2vw,38px);font-weight:800;line-height:1.05;letter-spac
 .stats .due .v{color:var(--warn)} .stats .over .v{color:var(--avoid)} .stats .book .v{color:var(--cash)}
 
 /* tabs */
+.acct{display:flex;align-items:center;gap:10px;margin-top:18px;flex-wrap:wrap}
+.acct label{font-family:"DM Mono",monospace;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint)}
+.acct select{font-family:inherit;font-size:14px;font-weight:600;padding:7px 10px;border-radius:7px;border:1px solid var(--rule);background:var(--card);color:var(--ink);min-width:220px}
+.acct .hint{font-size:13px;color:var(--faint)}
 .tabs{display:flex;gap:5px;margin-top:26px;flex-wrap:wrap;border-bottom:1px solid var(--rule);padding-bottom:0}
 .tabs button{appearance:none;border:1px solid transparent;border-bottom:0;background:none;cursor:pointer;
   font-family:"DM Mono",monospace;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);
@@ -229,6 +233,8 @@ h2.sec{font-size:20px;font-weight:700;letter-spacing:-.015em;margin-top:30px;pad
     <div class="row"><button class="b pri" id="setupBtn">Enter connection details</button></div>
   </div>
 
+  <div class="acct"><label for="f-se">Sending account</label><select id="f-se"><option value="all">All accounts</option></select><span class="hint" id="se-hint"></span></div>
+
   <div class="stats" id="stats"></div>
 
   <div class="tabs" role="tablist" id="tabs">
@@ -315,7 +321,8 @@ function today(){var d=new Date();return iso(d)}
 function iso(d){return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate())}
 function pad(n){return n<10?"0"+n:""+n}
 function plus(days){var d=new Date();d.setDate(d.getDate()+(days||0));return iso(d)}
-function dayGap(a,b){ if(!a)return 0; var x=new Date(a+"T00:00:00"),y=new Date((b||today())+"T00:00:00");
+function dstr(v){ if(!v) return ""; v=String(v); if(v.indexOf("T")>0){ var d=new Date(v); if(!isNaN(d)) return iso(d) } return v.slice(0,10) }
+function dayGap(a,b){ a=dstr(a); if(!a)return 0; var x=new Date(a+"T00:00:00"),y=new Date((b||today())+"T00:00:00");
   return Math.round((x-y)/86400000) }
 function human(dstr){
   if(!dstr) return "no date";
@@ -389,7 +396,7 @@ function refresh(manual){
   return apiGet().then(function(j){
     inflight=false;
     if(!j||!j.ok){ fail(j&&j.error?j.error:"bad response"); return }
-    ROWS=(j.leads||[]).map(function(o){ o.priority=Number(o.priority)||3; if(!Array.isArray(o.touches)) o.touches=[]; return o });
+    ROWS=(j.leads||[]).map(function(o){ o.priority=Number(o.priority)||3; if(!Array.isArray(o.touches)) o.touches=[]; ["addedAt","lastTouchAt","nextActionAt"].forEach(function(k){ o[k]=dstr(o[k]) }); return o });
     CONNERR=""; READY=true; LASTSYNC=Date.now();
     conn(ROWS.length+" leads · synced "+agoText(),"ok"); render();
   }).catch(function(e){ inflight=false; fail("offline"); });
@@ -465,6 +472,23 @@ function copyText(t,label){
   }
 }
 
+/* ---------- sending account ---------- */
+var ACCT="all"; try{ ACCT=localStorage.getItem("od_acct")||"all" }catch(e){}
+function acctKey(r){ var s=String(r.sender||"").trim(); if(!s) return "(no sender)"; return s.split(/[\s\u2014\-\/|,]+/)[0] }
+function acctLabel(k){ if(k==="(no sender)") return "No sender set";
+  for(var i=0;i<ROWS.length;i++){ var m=String(ROWS[i].sender||"").match(/^([A-Z][\w'.]+\s+[A-Z][\w'.]+)/); if(m&&acctKey(ROWS[i])===k) return m[1] }
+  return k }
+function VIS(){ return ACCT==="all"?ROWS:ROWS.filter(function(r){return acctKey(r)===ACCT}) }
+function fillAcct(){
+  var el=$("#f-se"), c={}; ROWS.forEach(function(r){var k=acctKey(r); c[k]=(c[k]||0)+1});
+  var keys=Object.keys(c).sort(function(a,b){return c[b]-c[a]});
+  if(ACCT!=="all"&&!c[ACCT]&&ROWS.length) ACCT="all";
+  el.innerHTML='<option value="all">All accounts ('+ROWS.length+')</option>'+keys.map(function(k){
+    return '<option value="'+esc(k)+'">'+esc(acctLabel(k))+' ('+c[k]+')</option>'}).join("");
+  el.value=ACCT;
+  $("#se-hint").textContent=ACCT==="all"?"Showing every account — pick one to see only what that profile should send.":"Only leads to send from "+acctLabel(ACCT)+"'s profile.";
+}
+
 /* ---------- derived ---------- */
 function isDue(r){ return LIVE.indexOf(r.status)>=0 && r.nextActionAt && dayGap(r.nextActionAt)<=0 }
 function urgency(r){ if(!r.nextActionAt) return "later";
@@ -476,23 +500,24 @@ function sortDue(a,b){
 }
 
 /* ---------- render ---------- */
-function render(){ stats(); renderDue(); renderPipe(); renderTable(); fillFilters(); }
+function render(){ fillAcct(); stats(); renderDue(); renderPipe(); renderTable(); fillFilters(); }
 
 function stats(){
-  var due=ROWS.filter(isDue).length,
-      over=ROWS.filter(function(r){return isDue(r)&&dayGap(r.nextActionAt)<0}).length,
-      out=ROWS.filter(function(r){return ["invite_sent","accepted","messaged"].indexOf(r.status)>=0}).length,
-      rep=ROWS.filter(function(r){return ["replied","call_booked","proposal","won"].indexOf(r.status)>=0}).length,
-      book=ROWS.filter(function(r){return ["call_booked","proposal","won"].indexOf(r.status)>=0}).length,
-      q=ROWS.filter(function(r){return r.status==="queued"}).length;
-  var sent=ROWS.filter(function(r){return r.status!=="queued"}).length;
+  var R=VIS();
+  var due=R.filter(isDue).length,
+      over=R.filter(function(r){return isDue(r)&&dayGap(r.nextActionAt)<0}).length,
+      out=R.filter(function(r){return ["invite_sent","accepted","messaged"].indexOf(r.status)>=0}).length,
+      rep=R.filter(function(r){return ["replied","call_booked","proposal","won"].indexOf(r.status)>=0}).length,
+      book=R.filter(function(r){return ["call_booked","proposal","won"].indexOf(r.status)>=0}).length,
+      q=R.filter(function(r){return r.status==="queued"}).length;
+  var sent=R.filter(function(r){return r.status!=="queued"}).length;
   var rate=sent?Math.round(rep/sent*100)+"%":"—";
   $("#stats").innerHTML=
     cell("due",due,"due now")+cell("over",over,"overdue")+cell("",q,"queued to send")+
     cell("",out,"awaiting reply")+cell("",rep,"replied")+cell("book",book,"calls booked")+
     cell("",rate,"reply rate");
   $("#n-today").textContent=due?" "+due:"";
-  $("#n-all").textContent=ROWS.length?" "+ROWS.length:"";
+  $("#n-all").textContent=R.length?" "+R.length:"";
   function cell(c,v,k){return '<div class="'+c+'"><span class="v mono">'+v+'</span><span class="k">'+k+'</span></div>'}
 }
 
@@ -502,9 +527,9 @@ function renderDue(){
   if(!ROWS.length){w.innerHTML=CONNERR
     ?'<div class="empty"><b>The board could not reach the Google Sheet.</b><br>'+esc(CONNERR)+' — click the badge at the top right to retry.<br>Your leads are safe; only this view is disconnected.</div>'
     :'<div class="empty"><b>No leads yet.</b><br>Ask Claude to load a batch, or add one from the All leads tab.</div>';return}
-  var due=ROWS.filter(isDue).sort(sortDue);
+  var due=VIS().filter(isDue).sort(sortDue);
   if(!due.length){
-    var next=ROWS.filter(function(r){return LIVE.indexOf(r.status)>=0&&r.nextActionAt}).sort(sortDue)[0];
+    var next=VIS().filter(function(r){return LIVE.indexOf(r.status)>=0&&r.nextActionAt}).sort(sortDue)[0];
     w.innerHTML='<div class="empty"><b>Nothing is due right now.</b><br>'+
       (next?'Next up: '+esc(next.name)+' '+esc(human(next.nextActionAt))+'.':'Every live lead is waiting on something without a date.')+'</div>';
     return;
@@ -579,7 +604,7 @@ function renderPipe(){
   var host=$("#pipe");
   host.innerHTML=ST.filter(function(s){return s.k!=="lost"||ROWS.some(function(r){return r.status==="lost"})})
    .map(function(s){
-    var rs=ROWS.filter(function(r){return r.status===s.k}).sort(sortDue);
+    var rs=VIS().filter(function(r){return r.status===s.k}).sort(sortDue);
     return '<div class="col c-'+s.c+'"><h4>'+esc(s.n)+'<span class="n mono">'+rs.length+'</span></h4>'+
       '<p class="d">'+esc(s.d)+'</p><ul>'+
       rs.slice(0,14).map(function(r){return '<li data-open="'+esc(r.id)+'">'+esc(r.name)+
@@ -606,7 +631,7 @@ function fillFilters(){
 
 function renderTable(){
   var w=$("#tableWrap");
-  var rs=ROWS.filter(function(r){
+  var rs=VIS().filter(function(r){
     if(flt.st!=="all"&&r.status!==flt.st) return false;
     if(flt.co!=="all"&&r.country!==flt.co) return false;
     if(flt.pl!=="all"&&r.play!==flt.pl) return false;
@@ -748,6 +773,7 @@ $("#q").addEventListener("input",function(e){flt.q=e.target.value;renderTable()}
 $("#f-st").addEventListener("change",function(e){flt.st=e.target.value;renderTable()});
 $("#f-co").addEventListener("change",function(e){flt.co=e.target.value;renderTable()});
 $("#f-pl").addEventListener("change",function(e){flt.pl=e.target.value;renderTable()});
+$("#f-se").addEventListener("change",function(e){ACCT=e.target.value; try{localStorage.setItem("od_acct",ACCT)}catch(x){} render()});
 
 })();
 </script>
